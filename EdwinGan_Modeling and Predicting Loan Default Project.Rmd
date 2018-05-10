@@ -1,0 +1,839 @@
+
+---
+title: "Modeling and Predicting Loan Defaults"
+author: "Kheng Horng Gan Edwin"
+date: "March 22, 2018"
+output: word_document
+fontsize: 12pt
+---
+
+**Introduction:** For this analysis, we used a dataset containing 50,000 loan recipient cases randomly sampled from around the United States. There are 30 variables in our dataset, however, some are irrelevant for identifying the likelihood of an applicant defaulting on their loan. We conducted a logistic regression modeling and analysis to create a model that predicts which applicants are likely to default on their loans. Banks should use this model as it can maximize their profit.
+ 
+**Data Analysis:** For this analysis ‘Good’= fully paid loans and ‘Bad’= loans that are charged off or defaulted. Loans that are late, currently being paid, or in grace period have been removed from the dataset. We used logistic regression to create a training model for predicting loan status. A default threshold of 0.5 was used to classify the “Good” and “Bad” loans. Although the overall accuracy of the model was high, this was not an effective model to predict if a loan will be repaid because the training dataset was unbalanced. 
+
+We used the oversampling technique to ensure that there are an even number of “good” and “bad” loans in the dataset for this section. This fixed the issue that we had with the previous model and allowed for a more accurate one. Our second model was more effective because we increased the percentage of correctly predicted 'bad' loans as compared to the previous model. This means that the bank will be able to identify more cases where loans will be defaulted upon, saving their resources for clients who are able to pay off their loans.
+
+Then, we found that a backward selection procedure was the best model because it has a low AIC and 65% accuracy. Next, we experimented with the threshold amount and found that when we increase the threshold, the number of incorrectly predicted loans that are actually good increases.  By changing the classification threshold, the overall profit of the bank will fluctuate and the peak profit value for the bank will occur at 0.55 threshold, where the bank grants 65% of loans. To measure whether our model has high predictive ability, we completed a McFadden test and found that our model has some limitations, as the score from this test was low.
+ 
+**Conclusion:** In summary, we recommend the model with backward selection procedure and a classification threshold of 0.55 as it will produce the highest profit for the bank at the highest level of overall accuracy. Although there are some limitations to the model's predictive capability, we can predict loan default at 65% accuracy and assure higher profits for the bank at $3,559,022.00.
+
+
+
+##Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Packages
+```{r library, message=FALSE}
+
+library(ggplot2)
+library(gridExtra)
+library(mice) 
+library(VIM)
+library(leaps)
+library(pscl)
+library(ROSE)
+library(car)
+library(scales)
+library(ResourceSelection)
+library(ggcorrplot)
+
+```
+
+
+## Dataset
+```{r loaddata}
+
+loandata <- read.csv('https://datascienceuwl.github.io/Project2018/loans50k.csv') 
+
+```
+
+
+## Part 1: Introduction 
+This dataset: loandata contains information about 50,000 loan recipients randomly sampled from around the United States. With this dataset, and for the purpose of this project, a logistic regression analysis will be conducted to attempt to predict which applicants are likely to default on their loans. There are 30 variables, however, for this analysis some are considered irrelevant for identifying the likelyhood of an applicant defaulting on their loan. 
+
+
+## Part 2: Preparing and Exploring the Data
+We decided to add a new response variable, called NewStatus having two levels: Good (fully paid loans) and Bad (charged off and defaulted loans). Loans that are late, currently being paid, or in grace period have been removed from the dataset so that we are able to focus only on loans that have been paid in full or were defaulted. 
+
+```{r, include=FALSE}
+#Create the new column named "NewStatus" filled with "NA"
+loandata['NewStatus'] <- NA 
+
+loandata$NewStatus[loandata$status=="Fully Paid"] <- "Good" 
+loandata$NewStatus[loandata$status=="Charged Off"] <- "Bad" 
+loandata$NewStatus[loandata$status=="Default"] <- "Bad" 
+#str(loandata)
+
+#Change the class to factor
+loandata$NewStatus <- as.factor(loandata$NewStatus)
+#str(loandata)
+
+#remove NA's, which are Loans that are late, current (being paid), or in grace period.
+NoNA <- function(data, desiredCols){
+  NoNAVec <- complete.cases(data[, desiredCols])
+  return(data[NoNAVec, ])
+}
+
+#save the new dataframe and named it as loan1_df
+loan1_df <- NoNA(loandata, c("NewStatus")) 
+
+```
+
+```{r, include=FALSE}
+
+#check correlation
+cor.loan <- subset(loan1_df, select = -c(term, grade, employment, length, home, verified, reason, state, status, NewStatus))
+head(cor.loan)
+
+# calculate correlations using cor and store the results
+corrdata <- cor(cor.loan)
+
+# use the package's cor_pmat function to calculate p-values for the correlations
+p.mat <- cor_pmat(cor.loan)
+
+# produce a nice highlighted correlation matrix
+ggcorrplot(corrdata, title = "Correlation matrix for loan data")
+
+```
+
+```{r, warnings=FALSE, echo=FALSE, results='hide', messages=FALSE, fig.width=6, fig.height=6}
+
+# produce a nice highlighted correlation matrix
+ggcorrplot(corrdata, title = "Correlation matrix for Loan Dataset")
+
+```
+
+We conducted a correlation test and some variables have been eliminated for this analysis (loadID, bcRatio, bcOpen, revolRatio, employment, state, status) because they do not directly impact the likelyhood that a loan will default. These variables describe the loan cases for filing purposes, but do not provide key insights about the applicant's financial capacity. 
+
+```{r, include=FALSE}
+
+#delete : employment, state, status, loadID, bcRatio, bcOpen, revolRatio
+loan1.2_df <- subset(loan1_df, select = -c(loadID, bcRatio, bcOpen, revolRatio, employment, state, status))
+#str(loan1.2_df)
+
+```
+
+```{r, include=FALSE}
+
+#use table to view all the levels in each variables
+table(loan1.2_df$term)
+table(loan1.2_df$grade)
+table(loan1.2_df$length)
+table(loan1.2_df$home)
+table(loan1.2_df$verified)
+table(loan1.2_df$reason)
+table(loan1.2_df$NewStatus)
+#str(loan1.2_df)
+
+#categorize grade
+levels(loan1.2_df$grade) <- list (A = c("A"), 
+                                   B = c("B"),
+                                   C = c("C"),
+                                   D = c("D"),
+                                   "other" = c("E", "F", "G"))
+#table(loan1.2_df$grade)
+
+#categorize reason
+levels(loan1.2_df$reason) <- list (credit_card = c("credit_card"), 
+                                   debt_consolidation = c("debt_consolidation"), 
+                                   other = c("car", "house", "major_purchase", "medical", "moving", "renewable_energy", "small_business", "vacation", "wedding"))
+#table(loan1.2_df$reason)
+
+#categorize length
+levels(loan1.2_df$length) <- list ("<5 years" = c("< 1 year", "1 year", "2 years", "3 years", "4 years"),
+                                   "5-9years"= c("5 years", "6 years", "7 years", "8 years", "9 years"), 
+                                   "10+years" = c("10+ years"))
+#table(loan1.2_df$length)
+
+#drop level that contain only "0"
+clean_loans <- droplevels(loan1.2_df)
+#str(clean_loans)
+```
+
+```{r plots, warnings=FALSE, echo=FALSE, results='hide', messages=FALSE}
+#create histograms of some of the levels in the variables (factor class)
+
+p1 <- ggplot(data=loan1.2_df, aes(x=loan1.2_df$grade)) + 
+      geom_bar() + 
+      xlab("grade") +
+      theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0))
+
+p2 <- ggplot(data=loan1.2_df, aes(x=loan1.2_df$reason)) + 
+      geom_bar() + 
+      xlab("reason") +
+      theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0))
+
+p3 <- ggplot(data=loan1.2_df, aes(x=loan1.2_df$length)) + 
+      geom_bar() + 
+      xlab("length") +
+      theme(axis.text.x=element_text(angle=90, hjust=1, vjust=0))
+
+grid.arrange(p1, p2, p3, nrow=2, 
+             top="Predictors")
+
+```
+
+As shown in the charts above, we have consolidated the variables grade and reason to include an 'other' cagegory for the seldom-occuring values. For length, we have grouped the data into three broader categories in addition to an 'N/A' cagegory for missing values. 
+
+There are multiple variables, which had missing values in this dataset, so we used imputation to supplement them through the mice package while minimizing bias in the analysis. 
+
+In the table below are the results we generated showing which variables have missing values.  Length and reason have the highest amount of missing values in the dataset. 
+
+```{r plot, include=FALSE}
+mice_plot <- aggr(clean_loans, col=c('navyblue','yellow'),
+                    numbers=TRUE, sortVars=TRUE,
+                    labels=names(loan1.2_df), cex.axis=.7,
+                    gap=3, ylab=c("Missing data","Pattern"))
+#warning=FALSE, echo=FALSE, results='hide', messages=FALSE, plot=FALSE
+```
+
+```{r, echo=FALSE}
+mice_plot
+
+```
+
+```{r, include=FALSE}
+
+clean_loans1 <- mice(clean_loans,m=2,maxit=5,meth='pmm',seed=500)
+#summary(clean_loans1)
+#str(clean_loans1)
+#clean_loans1$imp
+
+completedLoans <- complete(clean_loans1, 1)
+
+```
+
+
+Next, two datasets were created from the original one; dataset 1 "training" consists of 80% of the dataset while dataset 2 "test" contains 20%.  These two datasets were chosen randomly to minimize bias. The variable 'totalPaid' will be removed from the train dataset as it is not a predictor of loan default. 
+
+```{r split}
+
+## 80% of the sample size
+smp_size <- floor(0.80 * nrow(completedLoans))
+
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(completedLoans)), size = smp_size)
+
+training <- completedLoans[train_ind, ] #training dataset - 80%
+test <- completedLoans[-train_ind, ] #test dataset - 20%
+
+```
+
+```{r, include=FALSE}
+#head(train) #29 columns, 27,724 rows
+#head(test) #29 columns, 6,931 rows
+
+#remove totalPaid, because it can't be use as a predictor
+train_clean <- subset(training, select = -c(totalPaid))
+#head(train_clean)
+
+```
+
+
+## Part 3: First Model and Diagnostics
+
+We used logistic regession to create a training model, then ran the test dataset to predict the loan status for each case. A default threshold of 0.5 was used to classify the “Good” and “Bad” loans. 
+
+The training model is summarised below.
+
+```{r, warning=FALSE, message= FALSE}
+
+train.model <- glm(NewStatus~., data = train_clean, family = binomial(link = 'logit'))
+summary(train.model)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+#Unbalance data
+
+predprob <- predict(train.model, newdata = test, type="response") # 
+threshhold <- 0.5 # set the threshold 
+predGoodBad <- cut(predprob, breaks=c(-Inf, threshhold, Inf), labels=c("Bad Loans", "Good Loans")) 
+goodBadTab <- table(test$NewStatus, predGoodBad)
+addmargins(goodBadTab)
+
+p.goodBadTab <- ((addmargins(goodBadTab)[1]) + (addmargins(goodBadTab)[5])) / sum(goodBadTab)  # compute the proportion of correct classifications
+p.goodBadTab.bad <- addmargins(goodBadTab)[1] / addmargins(goodBadTab)[7]
+p.goodBadTab.good <- addmargins(goodBadTab)[5] / addmargins(goodBadTab)[8]
+
+print(paste('Proportion correctly predicted = ', round(p.goodBadTab,2)))
+print(paste('Proportion of correctly predicted Bad loans = ', round(p.goodBadTab.bad,2)))
+print(paste('Proportion of correctly predicted Good loans = ', round(p.goodBadTab.good,2)))
+
+```
+
+Based on the results using a threshold of 0.5, the overall accuracy of the training model is 79%. However, the percentage of accuracy for bad loans being correctly predicted is 12%. Although the overall accuracy of the model is high, this is not an effective model to predict if a loan will be repaid because the training dataset is unbalanced. 
+
+## Part 4: Improved Model and Diagnostics
+
+```{r echo=FALSE, results='hide'}
+
+table(train_clean$NewStatus)
+
+train_clean.oversample <- ovun.sample(NewStatus~., data=train_clean, method = "over", seed = 2, N=table(train_clean$NewStatus)[2]*2)$data
+
+table(train_clean.oversample$NewStatus) 
+# Good   Bad 
+# 21670 21670 
+
+```
+
+We used the oversampling technique to ensure that there are an even number of “good” and “bad” loans in the dataset. This should fix the issue that we had in the previous section and allow for a more accurate model. 
+
+```{r table, echo=FALSE, warning=FALSE, message= FALSE}
+
+#balance data
+
+train.oversample.model <- glm(NewStatus~., data = train_clean.oversample, family = binomial(link = 'logit'))
+
+predprob.oversample <- predict(train.oversample.model, newdata = test, type="response")
+
+threshhold <- 0.5 # set the threshold 
+predGoodBad.oversample <- cut(predprob.oversample, breaks=c(-Inf, threshhold, Inf), labels=c("Good Loans", "Bad Loans")) 
+goodBadTab.oversample <- table(test$NewStatus, predGoodBad.oversample)
+addmargins(goodBadTab.oversample)
+
+p.oversample <- ((addmargins(goodBadTab.oversample)[2]) + (addmargins(goodBadTab.oversample)[4])) / sum(goodBadTab.oversample)  
+
+p.oversample.bad <- addmargins(goodBadTab.oversample)[4] / addmargins(goodBadTab.oversample)[7]
+p.oversample.good <- addmargins(goodBadTab.oversample)[2] / addmargins(goodBadTab.oversample)[8]
+print(paste('Proportion correctly predicted = ', round(p.oversample,2)))
+print(paste('Proportion of correctly predicted Bad Loans = ', round(p.oversample.bad,2)))
+print(paste('Proportion of correctly predicted Good Loans = ', round(p.oversample.good,2)))
+
+```
+
+As shown above, we applied the logistic regression model to our balanced training dataset to form our 1st model and found that the overall accuracy of the model was 65%.  The percentage of “bad” loans correctly identified is 66% and the percentage of “good” loans correctly identified is 65%.  From these results, we can conclude that the model is more effective because we increased the percentage of correctly predicted 'bad' loans as compared to the previous model. This means that the bank will be able to identify more cases where loans will be defaulted upon, saving their resources for clientes who are able to pay off their loans. The AIC for this model is 53201.06. 
+
+```{r echo=FALSE, results='hide', include=FALSE, warning=FALSE}
+# train.oversample.model AIC
+extractAIC(glm(NewStatus~., data = train_clean.oversample, family = binomial(link = 'logit')))
+  
+#regsubset model
+loan.allmodels <- regsubsets(train_clean.oversample$NewStatus~., nvmax = 8, data = train_clean.oversample)
+summary(loan.allmodels)
+summary(loan.allmodels)$adjr2
+
+plot(loan.allmodels, scale ="adjr2")
+
+str(train_clean.oversample)
+train_clean.oversample <- droplevels(train_clean.oversample)
+str(train_clean.oversample)
+
+loan.allmodels1 <- glm(NewStatus~term + rate + grade + debtIncRat + totalAcc + accOpen24 + totalLim, data=train_clean.oversample, family ="binomial")
+extractAIC(glm(NewStatus~term + rate + grade + debtIncRat + totalAcc + accOpen24 + totalLim, data=train_clean.oversample, family ="binomial"))
+vif(loan.allmodels1)
+
+```
+
+Next, we used regsubsets to generate the 2nd model for predicting the response variable 'Newstatus', with up to 8 the predictor variables in the balanced training dataset. Below is the 2nd model with 8 predictors, with an AIC of 53601.15. None of the VIFS exceed 10, so there is no serious problem with collinearity among these predictors.
+
+From regsubsets (2nd model): 
+Step:  AIC=53601.15
+
+NewStatus ~  term + rate + grade + debtIncRat + totalAcc + accOpen24 + totalLim 
+
+```{r echo=FALSE, results='hide'}
+
+full <- glm(NewStatus~., data=train_clean.oversample, family = "binomial")
+full
+step(full, direction = "backward")
+
+```
+
+```{r echo=FALSE, results='hide'}
+
+null <- glm(NewStatus~1, data=train_clean.oversample, family="binomial")
+null
+step(null, scope = list(lower=null, upper=full), direction = "forward")
+
+```
+
+Then, we used the step function with backward and forward selection to find the 3rd and 4th models for predicting the response variable "Newstatus". 
+The AIC for the model from the backward selection procedure is 53212.12, which is smaller than the AIC from the forward selection procedure and the regsubsets model. So the 3rd model with backward selection procedure is the best model.
+
+The following predictors are important and were applied in our automatic models selection:
+
+From backward (3rd model):
+Step:  AIC=53212.12
+
+NewStatus ~ amount + term + rate + payment + grade + length + home + income + verified + reason + debtIncRat + delinq2yr + inq6mth + openAcc + pubRec + totalAcc + totalBal + totalRevLim + accOpen24 + avgBal + totalRevBal + totalBcLim + totalIlLim
+    
+From forward (4th model):
+Step:  AIC=53214.11
+
+NewStatus ~ grade + debtIncRat + term + totalLim + accOpen24 + totalAcc + delinq2yr + home + verified + rate + payment + amount + totalBal + openAcc + totalIlLim + inq6mth + totalRevBal + totalRevLim + reason + length + pubRec + totalBcLim + income + avgBal
+
+```{r echo=FALSE, results='hide'}
+
+loan.auto.model <- glm(NewStatus ~ amount + term + rate + payment + grade + length + home + income + verified + reason + debtIncRat + delinq2yr + inq6mth + openAcc + pubRec + totalAcc + totalBal + totalRevLim + accOpen24 + avgBal + totalRevBal + totalBcLim + totalIlLim, data=train_clean.oversample, family=binomial(link = 'logit'))
+
+vif(loan.auto.model)
+#None of the VIFs exceed 10, so there is no serious problem with collinearity among these predictors
+
+```
+
+```{r echo=FALSE, warning=FALSE, message= FALSE}
+
+predprob.auto.loan.model <- predict(loan.auto.model, newdata = test, type="response")
+
+threshold <- 0.5  
+pred.auto.loan <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold, Inf), labels=c("Good Loans", "Bad Loans"))  
+
+cTab.auto.loan <- table(test$NewStatus, pred.auto.loan) 
+addmargins(cTab.auto.loan)
+
+p.auto.loan <- ((addmargins(cTab.auto.loan)[2]) + (addmargins(cTab.auto.loan)[4])) / sum(cTab.auto.loan)  # compute the proportion of correct classifications
+p.auto.loan.bad <- addmargins(cTab.auto.loan)[4] / addmargins(cTab.auto.loan)[7]
+p.auto.loan.good <- addmargins(cTab.auto.loan)[2] / addmargins(cTab.auto.loan)[8]
+
+print(paste('Proportion correctly predicted = ', round(p.auto.loan,2)))
+print(paste('Proportion of correctly predicted Bad loans = ', round(p.auto.loan.bad,2)))
+print(paste('Proportion of correctly predicted Good loans = ', round(p.auto.loan.good,2)))
+
+```
+
+Now that we have found our best model, we tested it out with a 0.5 classification threshiold. After running the test, the results above show it is just as effective as the first model using the balanced training dataset with 65% accuracy.  The percentage of “bad” loans correctly identified is 66% and the percentage of “good” loans correctly identified is 65%. None of the VIFs exceed 10, so there is no serious problem with collinearity among these predictors
+
+```{r echo=FALSE, results='hide'}
+
+r2 <- pR2(loan.auto.model)  # use McFadden R-square, package = "pscl"
+r2[4] # McFadden's R-square is in the 4th column of the output
+
+```
+
+To measure whether our model has high predictive ability, we completed a McFadden test. We found that the McFadden score for our best model is 0.1153736, which means that it has relatively low explanatory power. With this evidence we can condlude that our model has some limitations when it comes to it's predictive capabilities. 
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0
+
+threshold0 <- 0
+pred.auto.loan0 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0 <- table(test$NewStatus, pred.auto.loan0) 
+addmargins(cTab.auto.loan0)
+
+newtest <- test
+newtest["Profit"] <- NA
+newtest$Profit <- newtest$totalPaid - newtest$amount
+head(newtest)
+
+newtest0 <- newtest
+newtest0["pred.auto.loan0"] <- NA
+newtest0$pred.auto.loan0 <- pred.auto.loan0
+head(newtest0)
+
+newtest0.Profit <- subset(newtest0, pred.auto.loan0 == "Good Loans", select = Profit)
+# 0 rows
+# sum(newtest0.Profit)
+# [1] 0 test0, threshold = 0
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.25
+
+threshold0.25 <- 0.25
+pred.auto.loan0.25 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.25, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.25 <- table(test$NewStatus, pred.auto.loan0.25) 
+addmargins(cTab.auto.loan0.25)
+
+newtest0.25 <- newtest
+newtest0.25["pred.auto.loan0.25"] <- NA
+newtest0.25$pred.auto.loan0.25 <- pred.auto.loan0.25
+head(newtest0.25)
+
+newtest0.25.profit <- subset(newtest0.25, pred.auto.loan0.25 == "Good Loans", select = Profit)
+
+sum(newtest0.25.profit)
+# [1] 1122928 , threshold = 0.25
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.5
+
+threshold0.5 <- 0.5
+pred.auto.loan0.5 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.5, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.5 <- table(test$NewStatus, pred.auto.loan0.5) 
+addmargins(cTab.auto.loan0.5)
+
+newtest0.5 <- newtest
+newtest0.5["pred.auto.loan0.5"] <- NA
+newtest0.5$pred.auto.loan0.5 <- pred.auto.loan0.5
+head(newtest0.5)
+
+newtest0.5.profit <- subset(newtest0.5, pred.auto.loan0.5 == "Good Loans", select = Profit)
+
+sum(newtest0.5.profit)
+# [1] 3312422 , threshold = 0.5
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.75
+
+threshold0.75 <- 0.75
+pred.auto.loan0.75 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.75, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.75 <- table(test$NewStatus, pred.auto.loan0.75) 
+addmargins(cTab.auto.loan0.75)
+
+newtest0.75 <- newtest
+newtest0.75["pred.auto.loan0.75"] <- NA
+newtest0.75$pred.auto.loan0.75 <- pred.auto.loan0.75
+head(newtest0.75)
+
+newtest0.75.profit <- subset(newtest0.75, pred.auto.loan0.75 == "Good Loans", select = Profit)
+
+sum(newtest0.75.profit)
+# [1] 2877319 , threshold = 0.75
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.65
+
+threshold0.65 <- 0.65
+pred.auto.loan0.65 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.65, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.65 <- table(test$NewStatus, pred.auto.loan0.65) 
+addmargins(cTab.auto.loan0.65)
+
+newtest0.65 <- newtest
+newtest0.65["pred.auto.loan0.65"] <- NA
+newtest0.65$pred.auto.loan0.65 <- pred.auto.loan0.65
+head(newtest0.65)
+
+newtest0.65.profit <- subset(newtest0.65, pred.auto.loan0.65 == "Good Loans", select = Profit)
+
+sum(newtest0.65.profit)
+# [1] 3501063 , threshold = 0.65
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.675
+
+threshold0.675 <- 0.675
+pred.auto.loan0.675 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.675, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.675 <- table(test$NewStatus, pred.auto.loan0.675) 
+addmargins(cTab.auto.loan0.675)
+
+newtest0.675 <- newtest
+newtest0.675["pred.auto.loan0.675"] <- NA
+newtest0.675$pred.auto.loan0.675 <- pred.auto.loan0.675
+head(newtest0.675)
+
+newtest0.675.profit <- subset(newtest0.675, pred.auto.loan0.675 == "Good Loans", select = Profit)
+
+sum(newtest0.675.profit)
+# [1] 3413477 , threshold = 0.675
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.66
+
+threshold0.66 <- 0.66
+pred.auto.loan0.66 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.66, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.66 <- table(test$NewStatus, pred.auto.loan0.66) 
+addmargins(cTab.auto.loan0.66)
+
+newtest0.66 <- newtest
+newtest0.66["pred.auto.loan0.66"] <- NA
+newtest0.66$pred.auto.loan0.66 <- pred.auto.loan0.66
+head(newtest0.66)
+
+newtest0.66.profit <- subset(newtest0.66, pred.auto.loan0.66 == "Good Loans", select = Profit)
+
+sum(newtest0.66.profit)
+# [1] 3393554 , threshold = 0.66
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.67
+
+threshold0.67 <- 0.67
+pred.auto.loan0.67 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.67, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.67 <- table(test$NewStatus, pred.auto.loan0.67) 
+addmargins(cTab.auto.loan0.67)
+
+newtest0.67 <- newtest
+newtest0.67["pred.auto.loan0.67"] <- NA
+newtest0.67$pred.auto.loan0.67 <- pred.auto.loan0.67
+head(newtest0.67)
+
+newtest0.67.profit <- subset(newtest0.67, pred.auto.loan0.67 == "Good Loans", select = Profit)
+
+sum(newtest0.67.profit)
+# [1] 3475325 , threshold = 0.67
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.665
+
+threshold0.665 <- 0.665
+pred.auto.loan0.665 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.665, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.665 <- table(test$NewStatus, pred.auto.loan0.665) 
+addmargins(cTab.auto.loan0.665)
+
+newtest0.665 <- newtest
+newtest0.665["pred.auto.loan0.665"] <- NA
+newtest0.665$pred.auto.loan0.665 <- pred.auto.loan0.665
+head(newtest0.665)
+
+newtest0.665.profit <- subset(newtest0.665, pred.auto.loan0.665 == "Good Loans", select = Profit)
+
+sum(newtest0.665.profit)
+# [1] 3453101 , threshold = 0.665
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.655
+
+threshold0.655 <- 0.655
+pred.auto.loan0.655 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.655, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.655 <- table(test$NewStatus, pred.auto.loan0.655) 
+addmargins(cTab.auto.loan0.655)
+
+newtest0.655 <- newtest
+newtest0.655["pred.auto.loan0.665"] <- NA
+newtest0.655$pred.auto.loan0.665 <- pred.auto.loan0.655
+head(newtest0.655)
+
+newtest0.655.profit <- subset(newtest0.655, pred.auto.loan0.655 == "Good Loans", select = Profit)
+
+sum(newtest0.655.profit)
+# [1] 3537355 , threshold = 0.655
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.15
+
+threshold0.15 <- 0.15
+pred.auto.loan0.15 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.15, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.15 <- table(test$NewStatus, pred.auto.loan0.15) 
+addmargins(cTab.auto.loan0.15)
+
+newtest0.15 <- newtest
+newtest0.15["pred.auto.loan0.15"] <- NA
+newtest0.15$pred.auto.loan0.15 <- pred.auto.loan0.15
+head(newtest0.15)
+
+newtest0.15.profit <- subset(newtest0.15, pred.auto.loan0.15 == "Good Loans", select = Profit)
+
+sum(newtest0.15.profit)
+# [1] 223375.8 , threshold = 0.15
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.35
+
+threshold0.35 <- 0.35
+pred.auto.loan0.35 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.35, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.35 <- table(test$NewStatus, pred.auto.loan0.35) 
+addmargins(cTab.auto.loan0.35)
+
+newtest0.35 <- newtest
+newtest0.35["pred.auto.loan0.35"] <- NA
+newtest0.35$pred.auto.loan0.35 <- pred.auto.loan0.35
+head(newtest0.35)
+
+newtest0.35.profit <- subset(newtest0.35, pred.auto.loan0.35 == "Good Loans", select = Profit)
+
+sum(newtest0.35.profit)
+# [1] 2080137 , threshold = 0.35
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.05
+
+threshold0.05 <- 0.05
+pred.auto.loan0.05 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.05, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.05 <- table(test$NewStatus, pred.auto.loan0.05) 
+addmargins(cTab.auto.loan0.05)
+
+newtest0.05 <- newtest
+newtest0.05["pred.auto.loan0.05"] <- NA
+newtest0.05$pred.auto.loan0.05 <- pred.auto.loan0.05
+head(newtest0.05)
+
+newtest0.05.profit <- subset(newtest0.05, pred.auto.loan0.05 == "Good Loans", select = Profit)
+
+sum(newtest0.05.profit)
+# [1] 8890 , threshold = 0.05
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.45
+
+threshold0.45 <- 0.45
+pred.auto.loan0.45 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.45, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.45 <- table(test$NewStatus, pred.auto.loan0.45) 
+addmargins(cTab.auto.loan0.45)
+
+newtest0.45 <- newtest
+newtest0.45["pred.auto.loan0.45"] <- NA
+newtest0.45$pred.auto.loan0.45 <- pred.auto.loan0.45
+head(newtest0.45)
+
+newtest0.45.profit <- subset(newtest0.45, pred.auto.loan0.45 == "Good Loans", select = Profit)
+
+sum(newtest0.45.profit)
+# [1] 2902991 , threshold = 0.45
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.55
+
+threshold0.55 <- 0.55
+pred.auto.loan0.55 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.55, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.55 <- table(test$NewStatus, pred.auto.loan0.55) 
+addmargins(cTab.auto.loan0.55)
+
+newtest0.55 <- newtest
+newtest0.55["pred.auto.loan0.55"] <- NA
+newtest0.55$pred.auto.loan0.55 <- pred.auto.loan0.55
+head(newtest0.55)
+
+newtest0.55.profit <- subset(newtest0.55, pred.auto.loan0.55 == "Good Loans", select = Profit)
+
+sum(newtest0.55.profit)
+# [1] 3559022 , threshold = 0.55
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.85
+
+threshold0.85 <- 0.85
+pred.auto.loan0.85 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.85, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.85 <- table(test$NewStatus, pred.auto.loan0.85) 
+addmargins(cTab.auto.loan0.85)
+
+newtest0.85 <- newtest
+newtest0.85["pred.auto.loan0.85"] <- NA
+newtest0.85$pred.auto.loan0.85 <- pred.auto.loan0.85
+head(newtest0.85)
+
+newtest0.85.profit <- subset(newtest0.85, pred.auto.loan0.85 == "Good Loans", select = Profit)
+
+sum(newtest0.85.profit)
+# [1] 1656290 , threshold = 0.85
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.95
+
+threshold0.95 <- 0.95
+pred.auto.loan0.95 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.95, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.95 <- table(test$NewStatus, pred.auto.loan0.95) 
+addmargins(cTab.auto.loan0.95)
+
+newtest0.95 <- newtest
+newtest0.95["pred.auto.loan0.95"] <- NA
+newtest0.95$pred.auto.loan0.95 <- pred.auto.loan0.95
+head(newtest0.95)
+
+newtest0.95.profit <- subset(newtest0.95, pred.auto.loan0.95 == "Good Loans", select = Profit)
+
+sum(newtest0.95.profit)
+# [1] 1422567 , threshold = 0.95
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.54
+
+threshold0.54 <- 0.54
+pred.auto.loan0.54 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.54, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.54 <- table(test$NewStatus, pred.auto.loan0.54) 
+addmargins(cTab.auto.loan0.54)
+
+newtest0.54 <- newtest
+newtest0.54["pred.auto.loan0.54"] <- NA
+newtest0.54$pred.auto.loan0.54 <- pred.auto.loan0.54
+head(newtest0.54)
+
+newtest0.54.profit <- subset(newtest0.54, pred.auto.loan0.54 == "Good Loans", select = Profit)
+
+sum(newtest0.54.profit)
+# [1] 3465027 , threshold = 0.54
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+#threshold = 0.56
+
+threshold0.56 <- 0.56
+pred.auto.loan0.56 <- cut(predprob.auto.loan.model, breaks=c(-Inf, threshold0.56, Inf), labels=c("Good Loans", "Bad Loans")) 
+cTab.auto.loan0.56 <- table(test$NewStatus, pred.auto.loan0.56) 
+addmargins(cTab.auto.loan0.56)
+
+newtest0.56 <- newtest
+newtest0.56["pred.auto.loan0.56"] <- NA
+newtest0.56$pred.auto.loan0.56 <- pred.auto.loan0.56
+head(newtest0.56)
+
+newtest0.56.profit <- subset(newtest0.56, pred.auto.loan0.56 == "Good Loans", select = Profit)
+
+sum(newtest0.56.profit)
+# [1] 3497599 , threshold = 0.56
+
+```
+
+```{r echo=FALSE, results='hide', include=FALSE}
+
+profit.threshold.df <- data.frame(Profits = c("0008890", "0223376", "1122928", "2080137", "2902991", 
+                                             "3559022", "3501063", "2877319", "1656290", "1422567"),
+                                  Thresholds = c("0.05", "0.15", "0.25", "0.35", "0.45",
+                                                 "0.55", "0.65", "0.75", "0.85", "0.95"))
+profit.threshold.df
+
+#table(profit.threshold.df)
+#as.data.frame(profit.threshold.df)
+
+```
+
+```{r echo=FALSE}
+
+ggplot(data=profit.threshold.df, aes(x=Thresholds, y=Profits)) +
+  geom_bar(colour="black", stat="identity") +
+  ggtitle("Bank Profit by Classification Threshold") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# [1] 0008890 , threshold = 0.05
+# [1] 0223376 , threshold = 0.15
+# [1] 1122928 , threshold = 0.25
+# [1] 2080137 , threshold = 0.35
+# [1] 2902991 , threshold = 0.45
+# [1] 3465027 , threshold = 0.54
+# [1] 3559022 , threshold = 0.55 <-
+# [1] 3497599 , threshold = 0.56
+# [1] 3501063 , threshold = 0.65 
+# [1] 2877319 , threshold = 0.75
+# [1] 1656290 , threshold = 0.85
+# [1] 1422567 , threshold = 0.95
+
+```
+
+## Part 5: Tuning the Predictions and Profit Analysis
+
+We experimented with the threshold amount and found that when we increase the threshold, the number of incorrectly predicted loans that are actually good increases.  By changing the classification threshold, the overall profit of the bank will fluctuate.  As we can see this in the graph above, from a threshold amount of 0-0.55 the bank’s overall profit will increase and from values 0.55-1, the bank’s profits decrease. This means that the peak profit value for the bank will occur at 0.55 threshold. 
+
+## Part 6: Results Summary
+
+In summary, we recommend the model with backward selection procedure and a classification threshold of 0.55 as it will produce the highest profit for the bank at the highest level of overall accuracy. Although there are some limitations to the model's predictive capability, we can predict loan default at 65% accuracy and assure higher profits for the bank at $3,559,022.00.
+
+
